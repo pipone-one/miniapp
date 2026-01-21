@@ -1,10 +1,55 @@
-backend/.env
-frontend/.env
-backend/.venv/
-frontend/node_modules/
-frontend/dist/
+# Python
 __pycache__/
-*.pyc
-backend/data/*.db
-backend/data/*.sqlite
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+env.bak/
+venv.bak/
+
+# Environment Variables (IMPORTANT: Do not commit secrets)
+# backend/.env  <-- We might want to keep a template, but usually ignore .env. 
+# However, user wants to move to Windows. If they clone, they need the .env.
+# Since this is a PRIVATE project (assumption) and user is moving machines, 
+# I will temporarily allow .env to be committed so they don't lose their keys 
+# when moving to Windows. I will WARN them about this.
+# .env
+
+# JS/Node
+node_modules/
+npm-debug.log
+yarn-error.log
+testem.log
+/coverage
+.nyc_output
 .DS_Store
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,909 +1,457 @@
-import { motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
+import { AnimatePresence, motion } from "framer-motion";
+import { useEffect, useState } from "react";
 import {
-  createPlan,
+  createNiche,
   createTask,
-  createTaskFromVoice,
   generateHooks,
-  getHealth,
-  getWindows,
-  listAccounts,
-  listModels,
+  createPlan,
+  listNiches,
   listTasks,
-  notifyWindow,
-  updateAccount,
-  updateModel,
-  updateTask,
-  type AccountPlatformItem,
-  type HealthResponse,
-  type ModelStatusItem,
-  type TaskItem,
-  type WindowItem
+  logTask,
+  type NicheItem,
+  type TaskItem
 } from "./api";
-import { getTelegram, type TelegramUser } from "./telegram";
 
-const defaultHooks = "```\nОжидаю хуки от Grok.\n```";
-const defaultPlan = "```\nОжидаю план от GPT-4o.\n```";
-const MINI_APP_LINK = import.meta.env.VITE_MINI_APP_LINK || "";
+// --- Components ---
 
-type Status = "idle" | "loading" | "error";
-type ToastTone = "success" | "error" | "info";
-
-type Toast = {
-  id: number;
-  text: string;
-  tone: ToastTone;
-};
-
-function formatWindowLabel(window: WindowItem, timezone: string) {
-  const start = new Date(window.start);
-  const end = new Date(window.end);
-  const startLabel = start.toLocaleTimeString("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: timezone
-  });
-  const endLabel = end.toLocaleTimeString("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: timezone
-  });
-  return `${startLabel}-${endLabel} ${timezone}`;
+function TabButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 py-3 text-sm font-medium transition-colors relative ${
+        active ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+      }`}
+    >
+      {label}
+      {active && (
+        <motion.div
+          layoutId="tab-indicator"
+          className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500"
+        />
+      )}
+    </button>
+  );
 }
 
-function formatModelStatus(value: string) {
-  if (value === "Active") return "Активна";
-  if (value === "Standby") return "Ожидание";
-  if (value === "Development") return "Разработка";
-  return value;
+function NicheCard({ niche }: { niche: NicheItem }) {
+  return (
+    <div
+      className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 flex flex-col gap-2"
+      style={{ borderLeftColor: niche.color, borderLeftWidth: 4 }}
+    >
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-zinc-100">{niche.name}</h3>
+        {/* Icon placeholder */}
+        <span className="text-zinc-500 text-xs">{niche.icon}</span>
+      </div>
+      {niche.description && <p className="text-xs text-zinc-400">{niche.description}</p>}
+    </div>
+  );
 }
 
-function formatAccountStatus(value: string) {
-  if (value === "Active") return "Активно";
-  if (value === "Warming") return "Прогрев";
-  if (value === "Standby") return "Ожидание";
-  return value;
+function TaskRow({ task, onToggle }: { task: TaskItem; onToggle: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="flex items-center gap-3 p-3 rounded-lg bg-zinc-800/40 border border-zinc-800/50"
+    >
+      <button
+        onClick={onToggle}
+        className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+          task.is_done_today
+            ? "bg-blue-500 border-blue-500 text-white"
+            : "border-zinc-600 hover:border-zinc-400"
+        }`}
+      >
+        {task.is_done_today && <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+           <p className={`text-sm truncate ${task.is_done_today ? "text-zinc-500 line-through" : "text-zinc-200"}`}>
+             {task.title}
+           </p>
+           {task.task_type === "recurring" && (
+             <svg className="w-3 h-3 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+             </svg>
+           )}
+        </div>
+        {task.niche && (
+          <p className="text-[10px] text-zinc-500 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: task.niche.color }} />
+            {task.niche.name}
+          </p>
+        )}
+      </div>
+    </motion.div>
+  );
 }
 
-function formatBotState(value: string | undefined) {
-  if (!value || value === "Unknown") return "Неизвестно";
-  if (value === "configured") return "Настроен";
-  if (value === "missing") return "Нет ключа";
-  if (value === "error:api") return "Ошибка";
-  return value;
-}
+// --- Screens ---
 
-export default function App() {
-  const [selectedModel, setSelectedModel] = useState("MIA");
-  const [hooksFormatted, setHooksFormatted] = useState(defaultHooks);
-  const [hooksStatus, setHooksStatus] = useState<Status>("idle");
-
-  const [brief, setBrief] = useState("");
-  const [planFormatted, setPlanFormatted] = useState(defaultPlan);
-  const [planStatus, setPlanStatus] = useState<Status>("idle");
-
-  const [windows, setWindows] = useState<WindowItem[]>([]);
-  const [timezone, setTimezone] = useState("Europe/Kyiv");
-  const [windowsStatus, setWindowsStatus] = useState<Status>("loading");
-  const [notifyStatus, setNotifyStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [lastNotified, setLastNotified] = useState<WindowItem | null>(null);
-
+function FocusScreen() {
+  const [niches, setNiches] = useState<NicheItem[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [tasksStatus, setTasksStatus] = useState<Status>("loading");
-  const [taskInput, setTaskInput] = useState("");
-  const [taskError, setTaskError] = useState("");
-  const [voiceStatus, setVoiceStatus] = useState<"idle" | "uploading" | "error">("idle");
-  const [voiceError, setVoiceError] = useState("");
-  const voiceInputRef = useRef<HTMLInputElement | null>(null);
-
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [healthStatus, setHealthStatus] = useState<Status>("loading");
-
-  const [models, setModels] = useState<ModelStatusItem[]>([]);
-  const [modelsStatus, setModelsStatus] = useState<Status>("loading");
-  const [modelEdits, setModelEdits] = useState<Record<number, { progress: number; status: string }>>({});
-
-  const [accounts, setAccounts] = useState<AccountPlatformItem[]>([]);
-  const [accountsStatus, setAccountsStatus] = useState<Status>("loading");
-  const [accountEdits, setAccountEdits] = useState<Record<number, { accounts: number; status: string }>>({});
-
-  const [isTelegram, setIsTelegram] = useState(false);
-  const [telegramUser, setTelegramUser] = useState<TelegramUser | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-
-  const formattedWindows = useMemo(() => {
-    return windows.map((window) => ({
-      ...window,
-      label: window.label,
-      timeLabel: formatWindowLabel(window, timezone)
-    }));
-  }, [windows, timezone]);
-
-  const pushToast = useCallback((text: string, tone: ToastTone = "info") => {
-    setToasts((prev) => [...prev, { id: Date.now(), text, tone }]);
-  }, []);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [selectedNiche, setSelectedNiche] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!toasts.length) return;
-    const timer = window.setTimeout(() => {
-      setToasts((prev) => prev.slice(1));
-    }, 2600);
-    return () => window.clearTimeout(timer);
-  }, [toasts]);
-
-  const loadWindows = useCallback(async (quiet = false) => {
-    if (!quiet) setWindowsStatus("loading");
-    try {
-      const data = await getWindows();
-      setWindows(data.windows);
-      setTimezone(data.timezone);
-      setWindowsStatus("idle");
-    } catch (error) {
-      setWindowsStatus("error");
-    }
-  }, []);
-
-  const loadHealth = useCallback(async (quiet = false) => {
-    if (!quiet) setHealthStatus("loading");
-    try {
-      const data = await getHealth(true);
-      setHealth(data);
-      setHealthStatus("idle");
-    } catch (error) {
-      setHealthStatus("error");
-    }
-  }, []);
-
-  const loadTasks = useCallback(async (quiet = false) => {
-    if (!quiet) setTasksStatus("loading");
-    try {
-      const data = await listTasks();
-      setTasks(data);
-      setTasksStatus("idle");
-    } catch (error) {
-      setTasksStatus("error");
-    }
-  }, []);
-
-  const loadModels = useCallback(async (quiet = false) => {
-    if (!quiet) setModelsStatus("loading");
-    try {
-      const data = await listModels();
-      setModels(data);
-      setModelEdits(
-        Object.fromEntries(data.map((model) => [model.id, { progress: model.progress, status: model.status }]))
-      );
-      setModelsStatus("idle");
-    } catch (error) {
-      setModelsStatus("error");
-    }
-  }, []);
-
-  const loadAccounts = useCallback(async (quiet = false) => {
-    if (!quiet) setAccountsStatus("loading");
-    try {
-      const data = await listAccounts();
-      setAccounts(data);
-      setAccountEdits(
-        Object.fromEntries(data.map((item) => [item.id, { accounts: item.accounts, status: item.status }]))
-      );
-      setAccountsStatus("idle");
-    } catch (error) {
-      setAccountsStatus("error");
-    }
-  }, []);
-
-  useEffect(() => {
-    const tg = getTelegram();
-    if (tg) {
-      tg.ready();
-      tg.expand();
-      tg.setHeaderColor?.("#0c0f14");
-      tg.setBackgroundColor?.("#06070a");
-      setIsTelegram(true);
-      setTelegramUser(tg.initDataUnsafe?.user ?? null);
-    }
-
-    loadWindows();
-    loadHealth();
-    loadTasks();
-    loadModels();
-    loadAccounts();
-  }, [loadAccounts, loadHealth, loadModels, loadTasks, loadWindows]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      loadHealth(true);
-      loadWindows(true);
-      loadTasks(true);
-      loadModels(true);
-      loadAccounts(true);
-    }, 45000);
-    return () => window.clearInterval(interval);
-  }, [loadAccounts, loadHealth, loadModels, loadTasks, loadWindows]);
-
-  const botState = (() => {
-    if (!health) return formatBotState("Unknown");
-    if (health.telegram_verified === "ok") return "Подключен";
-    if (health.telegram_verified) return formatBotState(health.telegram_verified);
-    return formatBotState(health.telegram);
-  })();
-
-  const telegramLabel = telegramUser?.first_name
-    ? `@${telegramUser.username ?? telegramUser.first_name}`
-    : "Telegram WebApp";
-
-  useEffect(() => {
-    const tg = getTelegram();
-    if (!tg?.MainButton || !tg?.BackButton) return;
-    const handleMain = () => {
-      const input = document.querySelector<HTMLInputElement>("input[placeholder='Добавить задачу или продиктовать']");
-      input?.focus();
-    };
-    const handleBack = () => {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    };
-
-    tg.MainButton.setParams({
-      text: "Новая задача",
-      color: "#44d4ff",
-      text_color: "#06070a",
-      is_active: true
+    Promise.all([listNiches(), listTasks()]).then(([n, t]) => {
+      setNiches(n);
+      setTasks(t);
+      setLoading(false);
     });
-    tg.MainButton.show();
-    tg.MainButton.onClick(handleMain);
-    tg.BackButton.show();
-    tg.BackButton.onClick(handleBack);
+  }, []);
 
-    return () => {
-      tg.MainButton.offClick(handleMain);
-      tg.BackButton.offClick(handleBack);
-      tg.MainButton.hide();
-      tg.BackButton.hide();
-    };
-  }, [isTelegram]);
-
-  const handleGenerateHooks = async () => {
-    setHooksStatus("loading");
-    try {
-      const data = await generateHooks(selectedModel);
-      setHooksFormatted(data.formatted);
-      setHooksStatus("idle");
-      pushToast("Хуки готовы для копирования", "success");
-    } catch (error) {
-      setHooksFormatted("```\nНе удалось сгенерировать хуки.\n```");
-      setHooksStatus("error");
-      pushToast("Grok недоступен", "error");
+  const handleToggle = async (task: TaskItem) => {
+    // Optimistic update
+    if (task.task_type === "one_time") {
+      setTasks(prev => prev.filter(t => t.id !== task.id));
+    } else {
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, is_done_today: !t.is_done_today } : t));
     }
-  };
-
-  const handleCreatePlan = async () => {
-    if (!brief.trim()) {
-      setPlanFormatted("```\nСначала введи бриф.\n```");
-      setPlanStatus("error");
-      return;
-    }
-    setPlanStatus("loading");
-    try {
-      const data = await createPlan(brief.trim());
-      setPlanFormatted(data.formatted);
-      setPlanStatus("idle");
-      pushToast("План готов", "success");
-    } catch (error) {
-      setPlanFormatted("```\nНе удалось сгенерировать план.\n```");
-      setPlanStatus("error");
-      pushToast("GPT-4o недоступен", "error");
-    }
-  };
-
-  const handleNotify = async () => {
-    setNotifyStatus("sending");
-    try {
-      const data = await notifyWindow(MINI_APP_LINK || undefined);
-      setLastNotified(data.window);
-      setNotifyStatus(data.sent ? "sent" : "error");
-      pushToast(data.sent ? "Алерт отправлен" : "Не удалось отправить алерт", data.sent ? "success" : "error");
-    } catch (error) {
-      setNotifyStatus("error");
-      pushToast("Telegram недоступен", "error");
+    
+    // Send to backend
+    // Note: API currently only supports "done" logging. 
+    // If we toggle OFF a recurring task, we technically need to delete the log.
+    // For now, let's assume we only mark AS DONE.
+    if (!task.is_done_today) {
+      await logTask(task.id, "done");
     }
   };
 
   const handleAddTask = async () => {
-    const trimmed = taskInput.trim();
-    if (!trimmed) {
-      setTaskError("Сначала введи название задачи.");
-      return;
-    }
-    setTaskError("");
+    if (!newTaskTitle.trim()) return;
     try {
-      const created = await createTask(trimmed);
-      setTasks((prev) => [created, ...prev]);
-      setTaskInput("");
-      pushToast("Задача добавлена", "success");
-    } catch (error) {
-      setTaskError("Не удалось создать задачу.");
-      pushToast("Ошибка создания задачи", "error");
-    }
-  };
-
-  const handleVoiceUpload = async (file: File) => {
-    setVoiceStatus("uploading");
-    setVoiceError("");
-    try {
-      const created = await createTaskFromVoice(file);
-      setTasks((prev) => [created, ...prev]);
-      setVoiceStatus("idle");
-      pushToast("Голосовая задача создана", "success");
-    } catch (error) {
-      setVoiceStatus("error");
-      setVoiceError("Не удалось обработать голос.");
-      pushToast("Whisper недоступен", "error");
-    }
-  };
-
-  const handleToggleTask = async (task: TaskItem) => {
-    const nextDone = !task.is_done;
-    setTasks((prev) =>
-      prev.map((item) => (item.id === task.id ? { ...item, is_done: nextDone } : item))
-    );
-    try {
-      await updateTask(task.id, nextDone);
-      pushToast(nextDone ? "Задача выполнена" : "Задача возвращена", "info");
-    } catch (error) {
-      setTasks((prev) =>
-        prev.map((item) => (item.id === task.id ? { ...item, is_done: task.is_done } : item))
-      );
-      pushToast("Не удалось сохранить задачу", "error");
-    }
-  };
-
-  const handleModelSave = async (model: ModelStatusItem) => {
-    const edit = modelEdits[model.id];
-    if (!edit) return;
-    try {
-      const updated = await updateModel(model.id, {
-        progress: edit.progress,
-        status: edit.status
+      // Default to "One-time" task, use selected niche or first one
+      const nicheId = selectedNiche || (niches.length > 0 ? niches[0].id : 1);
+      const newTask = await createTask({
+        title: newTaskTitle,
+        niche_id: nicheId,
+        is_recurring: isRecurring
       });
-      setModels((prev) => prev.map((item) => (item.id === model.id ? updated : item)));
-      pushToast("Модель обновлена", "success");
-    } catch (error) {
-      setModelsStatus("error");
-      pushToast("Ошибка сохранения модели", "error");
+      setTasks(prev => [newTask, ...prev]);
+      setNewTaskTitle("");
+      setIsRecurring(false);
+      setShowAdd(false);
+    } catch (e) {
+      console.error("Failed to create task", e);
     }
   };
 
-  const handleAccountSave = async (account: AccountPlatformItem) => {
-    const edit = accountEdits[account.id];
-    if (!edit) return;
+  if (loading) return <div className="p-8 text-center text-zinc-500">Загрузка Life OS...</div>;
+
+  return (
+    <div className="space-y-6 pb-20">
+      <section>
+        <h2 className="text-lg font-bold text-zinc-100 mb-3 px-1">Ниши</h2>
+        <div className="grid grid-cols-2 gap-3">
+          {niches.map(n => <NicheCard key={n.id} niche={n} />)}
+        </div>
+      </section>
+
+      <section>
+        <div className="flex items-center justify-between mb-3 px-1">
+          <h2 className="text-lg font-bold text-zinc-100">План на сегодня</h2>
+          <button 
+            onClick={() => setShowAdd(!showAdd)}
+            className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-full transition-colors"
+          >
+            {showAdd ? "Отмена" : "+ Добавить"}
+          </button>
+        </div>
+
+        {showAdd && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            className="mb-4 bg-zinc-900/50 p-3 rounded-lg border border-zinc-800"
+          >
+            <input
+              autoFocus
+              value={newTaskTitle}
+              onChange={e => setNewTaskTitle(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && handleAddTask()}
+              placeholder="Что нужно сделать?"
+              className="w-full bg-transparent text-white text-sm outline-none placeholder:text-zinc-600 mb-3"
+            />
+            
+            <div className="flex items-center gap-2 mb-3">
+               <button
+                  onClick={() => setIsRecurring(!isRecurring)}
+                  className={`text-xs px-2 py-1 rounded-md border transition-colors flex items-center gap-1 ${
+                    isRecurring 
+                      ? "bg-purple-500/20 border-purple-500 text-purple-400" 
+                      : "border-zinc-700 text-zinc-500 hover:text-zinc-300"
+                  }`}
+               >
+                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                 </svg>
+                 Повторяющаяся
+               </button>
+            </div>
+
+            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+              {niches.map(n => (
+                <button
+                  key={n.id}
+                  onClick={() => setSelectedNiche(n.id)}
+                  className={`text-xs px-2 py-1 rounded-full border transition-colors whitespace-nowrap ${
+                    selectedNiche === n.id 
+                      ? "bg-zinc-800 border-zinc-600 text-white" 
+                      : "border-transparent text-zinc-500 hover:text-zinc-300"
+                  }`}
+                  style={selectedNiche === n.id ? { borderColor: n.color } : {}}
+                >
+                  {n.name}
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end mt-2">
+              <button
+                onClick={handleAddTask}
+                disabled={!newTaskTitle.trim()}
+                className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3 py-1.5 rounded disabled:opacity-50"
+              >
+                Создать
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        <div className="space-y-2">
+          {tasks.length === 0 ? (
+            <div className="text-center py-8 text-zinc-600 text-sm">На сегодня задач нет. Отдыхаем или строим?</div>
+          ) : (
+            tasks.map(t => <TaskRow key={t.id} task={t} onToggle={() => handleToggle(t)} />)
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// --- Nano Banana Component ---
+
+function NanoBanana() {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [processing, setProcessing] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+      setResult(null);
+    }
+  };
+
+  const handleProcess = () => {
+    if (!selectedFile) return;
+    setProcessing(true);
+    // Simulate processing
+    setTimeout(() => {
+      setProcessing(false);
+      // For now just show the original image as "result"
+      setResult(URL.createObjectURL(selectedFile));
+    }, 2000);
+  };
+
+  return (
+    <div className="space-y-3">
+      <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+        Nano Banana 🍌 <span className="text-xs bg-yellow-500/20 text-yellow-500 px-2 py-0.5 rounded">Beta</span>
+      </h2>
+      
+      <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-4 space-y-4">
+        <div className="space-y-2">
+          <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Загрузить фото</label>
+          <input 
+            type="file" 
+            accept="image/*"
+            onChange={handleUpload}
+            className="block w-full text-sm text-zinc-400
+              file:mr-4 file:py-2 file:px-4
+              file:rounded-full file:border-0
+              file:text-xs file:font-semibold
+              file:bg-zinc-800 file:text-zinc-300
+              hover:file:bg-zinc-700
+            "
+          />
+        </div>
+
+        {selectedFile && (
+          <div className="relative rounded-lg overflow-hidden bg-zinc-800/50 aspect-video flex items-center justify-center">
+            {result ? (
+              <img src={result} alt="Result" className="w-full h-full object-contain" />
+            ) : (
+              <img src={URL.createObjectURL(selectedFile)} alt="Preview" className="w-full h-full object-contain opacity-50" />
+            )}
+            
+            {processing && (
+              <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-yellow-500"></div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-2">
+          <button 
+            disabled={!selectedFile || processing}
+            onClick={handleProcess}
+            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 py-2 rounded text-xs font-medium border border-zinc-700 disabled:opacity-50"
+          >
+            Face Swap
+          </button>
+          <button 
+            disabled={!selectedFile || processing}
+            onClick={handleProcess}
+            className="bg-yellow-600 hover:bg-yellow-500 text-white py-2 rounded text-xs font-medium disabled:opacity-50"
+          >
+            Магия ✨
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LabScreen() {
+  const [model, setModel] = useState("MIA");
+  const [hooks, setHooks] = useState("");
+  const [brief, setBrief] = useState("");
+  const [plan, setPlan] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleHooks = async () => {
+    setLoading(true);
     try {
-      const updated = await updateAccount(account.id, {
-        accounts: edit.accounts,
-        status: edit.status
-      });
-      setAccounts((prev) => prev.map((item) => (item.id === account.id ? updated : item)));
-      pushToast("Аккаунты обновлены", "success");
-    } catch (error) {
-      setAccountsStatus("error");
-      pushToast("Ошибка сохранения аккаунтов", "error");
+      const res = await generateHooks(model);
+      setHooks(res.formatted);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePlan = async () => {
+    setLoading(true);
+    try {
+      const res = await createPlan(brief);
+      setPlan(res.formatted);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <motion.main
-      className="tma-shell min-h-screen bg-night-950 text-white"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6, ease: "easeOut" }}
-    >
-      <div className="relative overflow-hidden">
-        <div className="absolute inset-0">
-          <div className="absolute -top-40 right-0 h-80 w-80 rounded-full bg-neon-purple/20 blur-[120px]" />
-          <div className="absolute bottom-0 left-0 h-72 w-72 rounded-full bg-neon-blue/20 blur-[120px]" />
-        </div>
+    <div className="space-y-8 pb-20">
+      <NanoBanana />
 
-        <div className="relative mx-auto flex min-h-screen max-w-[560px] flex-col gap-6 px-4 py-6 sm:max-w-4xl lg:max-w-6xl sm:px-6 lg:px-8">
-          <header className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.4em] text-white/50">AI Cartel Command</p>
-                <h1 className="font-display text-2xl font-semibold sm:text-4xl">Центр управления моделями</h1>
-              </div>
-              <motion.button
-                className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-white/80 shadow-glow"
-                whileTap={{ scale: 0.96 }}
-                whileHover={{ scale: 1.03 }}
-              >
-                Подключить бота
-              </motion.button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <span className="rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-white/60">
-                Статус
-              </span>
-              <span className="rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-white/50">
-                Среда: {isTelegram ? telegramLabel : "Браузер"}
-              </span>
-              <span className="rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-white/50">
-                Бот: {botState}
-              </span>
-              {healthStatus === "loading" && (
-                <span className="rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-white/40">
-                  Проверяю...
-                </span>
-              )}
-              {healthStatus === "error" && (
-                <span className="rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-neon-amber">
-                  Оффлайн
-                </span>
-              )}
-              {healthStatus === "idle" && health && (
-                <>
-                  <span className="rounded-full border border-neon-blue/40 bg-neon-blue/10 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-neon-blue">
-                    xAI: {health.xai_verified || health.xai}
-                  </span>
-                  <span className="rounded-full border border-neon-purple/40 bg-neon-purple/10 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-neon-purple">
-                    OpenAI: {health.openai_verified || health.openai}
-                  </span>
-                  <span className="rounded-full border border-neon-green/40 bg-neon-green/10 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-neon-green">
-                    Telegram: {health.telegram_verified || health.telegram}
-                  </span>
-                </>
-              )}
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 backdrop-blur">
-              <p className="text-sm text-white/70">
-                Изоляция фермы телефонов: <span className="text-neon-amber">1 телефон = 1 аккаунт</span>.
-                Масштабируй 10+ аккаунтов в Instagram, Threads и X без пересечений.
-              </p>
-            </div>
-            {!isTelegram && (
-              <div className="rounded-2xl border border-neon-blue/30 bg-neon-blue/10 p-4 text-sm text-white/70">
-                Для теста в Telegram: создай Mini App в BotFather → открой ссылку в Telegram. Сейчас открыт
-                браузерный режим.
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    className="rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-[10px] uppercase tracking-[0.3em] text-white/70"
-                    onClick={() => {
-                      void navigator.clipboard?.writeText(window.location.origin);
-                      pushToast("Ссылка скопирована", "success");
-                    }}
-                  >
-                    Скопировать ссылку
-                  </button>
-                  <span className="text-[10px] uppercase tracking-[0.3em] text-white/50">
-                    {window.location.origin}
-                  </span>
-                </div>
-              </div>
-            )}
-          </header>
-
-          <section className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="font-display text-xl">Обзор моделей</h2>
-                <div className="flex flex-wrap gap-2 text-[10px] uppercase tracking-[0.3em]">
-                  <span className="rounded-full border border-white/10 bg-night-900/70 px-2 py-1 text-white/50">
-                    Дневной прогресс
-                  </span>
-                  <span className="rounded-full border border-neon-green/30 bg-neon-green/10 px-2 py-1 text-neon-green">
-                    Активна
-                  </span>
-                  <span className="rounded-full border border-neon-blue/30 bg-neon-blue/10 px-2 py-1 text-neon-blue">
-                    Ожидание
-                  </span>
-                  <span className="rounded-full border border-neon-amber/40 bg-neon-amber/10 px-2 py-1 text-neon-amber">
-                    Разработка
-                  </span>
-                </div>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {modelsStatus === "loading" && (
-                  <div className="rounded-2xl border border-white/10 bg-night-900/60 p-4 text-sm text-white/60">
-                    Загружаю модели...
-                  </div>
-                )}
-                {modelsStatus === "error" && (
-                  <div className="rounded-2xl border border-white/10 bg-night-900/60 p-4 text-sm text-white/60">
-                    Данные моделей недоступны.
-                  </div>
-                )}
-                {modelsStatus === "idle" &&
-                  models.map((model) => {
-                    const edit = modelEdits[model.id] || { progress: model.progress, status: model.status };
-                    const statusColor =
-                      edit.status === "Active"
-                        ? "bg-neon-green"
-                        : edit.status === "Standby"
-                        ? "bg-neon-blue"
-                        : "bg-neon-amber";
-
-                    return (
-                      <motion.div
-                        key={model.id}
-                        className="rounded-2xl border border-white/10 bg-night-900/60 p-4 shadow-glow"
-                        whileHover={{ y: -4 }}
-                        transition={{ type: "spring", stiffness: 260, damping: 20 }}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <p className="text-xs uppercase tracking-[0.35em] text-white/50">{model.name}</p>
-                            <p className="text-sm text-white/70">{model.archetype}</p>
-                          </div>
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className={`h-2 w-2 rounded-full ${statusColor} animate-pulse`} />
-                            <span className="text-white/70">{formatModelStatus(edit.status)}</span>
-                          </div>
-                        </div>
-                        <div className="mt-4">
-                          <div className="flex items-center justify-between text-xs text-white/60">
-                            <span>Прогресс</span>
-                            <span>{edit.progress}%</span>
-                          </div>
-                          <div className="mt-2 h-2 rounded-full bg-night-800">
-                            <div
-                              className="h-2 rounded-full bg-gradient-to-r from-neon-blue to-neon-purple"
-                              style={{ width: `${edit.progress}%` }}
-                            />
-                          </div>
-                        </div>
-                        <div className="mt-4 flex flex-col gap-2">
-                          <input
-                            type="range"
-                            min={0}
-                            max={100}
-                            value={edit.progress}
-                            onChange={(event) => {
-                              const value = Number(event.target.value);
-                              setModelEdits((prev) => ({
-                                ...prev,
-                                [model.id]: { ...edit, progress: value }
-                              }));
-                            }}
-                            className="h-2 w-full accent-neon-blue"
-                          />
-                          <div className="flex items-center gap-2">
-                            <select
-                              value={edit.status}
-                              onChange={(event) => {
-                                setModelEdits((prev) => ({
-                                  ...prev,
-                                  [model.id]: { ...edit, status: event.target.value }
-                                }));
-                              }}
-                              className="flex-1 rounded-full border border-white/10 bg-night-900/70 px-3 py-1 text-xs uppercase tracking-[0.2em] text-white/70"
-                            >
-                              <option value="Active">Активна</option>
-                              <option value="Standby">Ожидание</option>
-                              <option value="Development">Разработка</option>
-                            </select>
-                            <motion.button
-                              className="rounded-full border border-neon-blue/40 bg-neon-blue/10 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-neon-blue"
-                              whileTap={{ scale: 0.96 }}
-                              whileHover={{ scale: 1.03 }}
-                              onClick={() => handleModelSave(model)}
-                            >
-                              Сохранить
-                            </motion.button>
-                          </div>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-4">
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-                <h2 className="font-display text-xl">Синхронизация окон</h2>
-                <p className="mt-2 text-sm text-white/60">
-                  Планирование в Киеве под окна США. Уведомление в Telegram за 15 минут до окна.
-                </p>
-                <div className="mt-4 space-y-3">
-                  {windowsStatus === "loading" && (
-                    <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                      Загружаю расписание...
-                    </div>
-                  )}
-                  {windowsStatus === "error" && (
-                    <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                      Расписание недоступно.
-                    </div>
-                  )}
-                  {windowsStatus === "idle" &&
-                    formattedWindows.map((window) => (
-                      <div
-                        key={window.label}
-                        className="flex items-center justify-between rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3"
-                      >
-                        <span className="text-sm text-white/70">{window.label}</span>
-                        <span className="text-xs uppercase tracking-[0.2em] text-neon-blue">{window.timeLabel}</span>
-                      </div>
-                    ))}
-                </div>
-                {lastNotified && (
-                  <p className="mt-3 text-xs uppercase tracking-[0.2em] text-white/50">
-                    Последний алерт: {lastNotified.label}
-                  </p>
-                )}
-                <motion.button
-                  className="mt-5 w-full rounded-2xl border border-neon-blue/40 bg-neon-blue/10 px-4 py-3 text-xs uppercase tracking-[0.25em] text-neon-blue"
-                  whileTap={{ scale: 0.97 }}
-                  whileHover={{ scale: 1.02 }}
-                  onClick={handleNotify}
-                  disabled={notifyStatus === "sending"}
-                >
-                  {notifyStatus === "sending" ? "Отправляю..." : "Отправить алерт"}
-                </motion.button>
-              </div>
-              <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-display text-xl">Матрица аккаунтов</h2>
-                  <span className="text-xs uppercase tracking-[0.2em] text-white/50">10+ аккаунтов</span>
-                </div>
-                <p className="mt-2 text-sm text-white/60">
-                  Масштабирование в Instagram, Threads и X. Сохраняем изоляцию телефонов.
-                </p>
-                <div className="mt-4 space-y-2">
-                  {accountsStatus === "loading" && (
-                    <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                      Загружаю аккаунты...
-                    </div>
-                  )}
-                  {accountsStatus === "error" && (
-                    <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                      Данные аккаунтов недоступны.
-                    </div>
-                  )}
-                  {accountsStatus === "idle" &&
-                    accounts.map((item) => {
-                      const edit = accountEdits[item.id] || { accounts: item.accounts, status: item.status };
-                      const color =
-                        edit.status === "Active"
-                          ? "text-neon-green"
-                          : edit.status === "Warming"
-                          ? "text-neon-amber"
-                          : "text-neon-blue";
-                      return (
-                        <div
-                          key={item.id}
-                          className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm text-white/70">{item.platform}</span>
-                            <span className={`text-xs uppercase tracking-[0.2em] ${color}`}>
-                              {formatAccountStatus(edit.status)}
-                            </span>
-                          </div>
-                          <div className="mt-2 flex items-center gap-2 text-xs">
-                            <input
-                              type="number"
-                              min={0}
-                              value={edit.accounts}
-                              onChange={(event) => {
-                                const value = Number(event.target.value);
-                                setAccountEdits((prev) => ({
-                                  ...prev,
-                                  [item.id]: { ...edit, accounts: value }
-                                }));
-                              }}
-                              className="w-20 rounded-full border border-white/10 bg-night-900/70 px-2 py-1 text-center text-white/70"
-                            />
-                            <span className="text-white/50">аккаунтов</span>
-                            <select
-                              value={edit.status}
-                              onChange={(event) => {
-                                setAccountEdits((prev) => ({
-                                  ...prev,
-                                  [item.id]: { ...edit, status: event.target.value }
-                                }));
-                              }}
-                              className="ml-auto rounded-full border border-white/10 bg-night-900/70 px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-white/70"
-                            >
-                              <option value="Active">Активно</option>
-                              <option value="Warming">Прогрев</option>
-                              <option value="Standby">Ожидание</option>
-                            </select>
-                            <motion.button
-                              className="rounded-full border border-neon-blue/40 bg-neon-blue/10 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-neon-blue"
-                              whileTap={{ scale: 0.96 }}
-                              whileHover={{ scale: 1.03 }}
-                              onClick={() => handleAccountSave(item)}
-                            >
-                              Сохранить
-                            </motion.button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-              <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl">Маркетинг‑лаборатория</h2>
-                <span className="text-xs uppercase tracking-[0.2em] text-white/50">Grok-4-1</span>
-              </div>
-              <p className="mt-2 text-sm text-white/60">
-                Логика Loop Trap: 5с видео, 7с текста. Выбери модель, получи 3 агрессивных хука.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {models.map((model) => (
-                  <button
-                    key={model.name}
-                    onClick={() => setSelectedModel(model.name)}
-                    className={`rounded-full border px-4 py-2 text-xs uppercase tracking-[0.2em] ${
-                      selectedModel === model.name
-                        ? "border-neon-blue/60 bg-neon-blue/10 text-neon-blue"
-                        : "border-white/15 bg-night-900/70 text-white/70"
-                    }`}
-                  >
-                    {model.name}
-                  </button>
-                ))}
-                <motion.button
-                  className="rounded-full border border-neon-purple/40 bg-neon-purple/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-neon-purple"
-                  whileTap={{ scale: 0.96 }}
-                  whileHover={{ scale: 1.03 }}
-                  onClick={handleGenerateHooks}
-                  disabled={hooksStatus === "loading"}
-                >
-                  {hooksStatus === "loading" ? "Генерирую..." : "Сгенерировать хуки"}
-                </motion.button>
-              </div>
-              <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-night-900/80 p-4 text-xs text-neon-blue">
-                {hooksFormatted}
-              </pre>
-              <div className="mt-6 border-t border-white/10 pt-5">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-display text-lg">Планер</h3>
-                  <span className="text-xs uppercase tracking-[0.2em] text-white/50">GPT-4o</span>
-                </div>
-                <p className="mt-2 text-sm text-white/60">Превращает бриф в тактический план.</p>
-                <textarea
-                  className="mt-3 w-full rounded-2xl border border-white/10 bg-night-900/70 p-3 text-sm text-white/80"
-                  rows={3}
-                  value={brief}
-                  onChange={(event) => setBrief(event.target.value)}
-                  placeholder="Бриф: запустить Loop Trap кампанию для Mia на US prime"
-                />
-                <motion.button
-                  className="mt-3 rounded-full border border-neon-purple/40 bg-neon-purple/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-neon-purple"
-                  whileTap={{ scale: 0.96 }}
-                  whileHover={{ scale: 1.03 }}
-                  onClick={handleCreatePlan}
-                  disabled={planStatus === "loading"}
-                >
-                  {planStatus === "loading" ? "Планирую..." : "Сгенерировать план"}
-                </motion.button>
-                <pre className="mt-4 overflow-x-auto rounded-2xl border border-white/10 bg-night-900/80 p-4 text-xs text-neon-blue">
-                  {planFormatted}
-                </pre>
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-              <h2 className="font-display text-xl">Командный центр задач</h2>
-              <p className="mt-2 text-sm text-white/60">Добавляй голосом или текстом, успех отмечается анимацией.</p>
-              <div className="mt-4 space-y-3">
-                {tasksStatus === "loading" && (
-                  <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                    Загружаю задачи...
-                  </div>
-                )}
-                {tasksStatus === "error" && (
-                  <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                    Список задач недоступен.
-                  </div>
-                )}
-                {tasksStatus === "idle" && tasks.length === 0 && (
-                  <div className="rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3 text-sm text-white/60">
-                    Задач пока нет.
-                  </div>
-                )}
-                {tasksStatus === "idle" &&
-                  tasks.map((task) => (
-                    <motion.label
-                      key={task.id}
-                      className="flex items-center gap-3 rounded-2xl border border-white/10 bg-night-900/70 px-4 py-3"
-                      whileHover={{ x: 4 }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={task.is_done}
-                        onChange={() => handleToggleTask(task)}
-                        className="h-4 w-4 rounded border-white/20 bg-night-800 text-neon-blue focus:ring-neon-blue"
-                      />
-                      <span className={`text-sm ${task.is_done ? "text-white/40 line-through" : "text-white/70"}`}>
-                        {task.title}
-                      </span>
-                      {task.is_done && (
-                          <motion.span
-                            className="ml-auto text-xs uppercase tracking-[0.3em] text-neon-green"
-                            initial={{ opacity: 0, y: -6 }}
-                            animate={{ opacity: 1, y: 0 }}
-                          >
-                            Успех
-                          </motion.span>
-                        )}
-                    </motion.label>
-                  ))}
-              </div>
-              <div className="mt-4 flex flex-col gap-2">
-                <div className="flex gap-2">
-                  <input
-                    className="flex-1 rounded-2xl border border-white/10 bg-night-900/70 px-4 py-2 text-sm text-white/70"
-                    placeholder="Добавить задачу или продиктовать"
-                    value={taskInput}
-                    onChange={(event) => setTaskInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        handleAddTask();
-                      }
-                    }}
-                  />
-                  <motion.button
-                    className="rounded-2xl border border-neon-blue/40 bg-neon-blue/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-neon-blue"
-                    whileTap={{ scale: 0.97 }}
-                    whileHover={{ scale: 1.03 }}
-                    onClick={handleAddTask}
-                  >
-                    Добавить
-                  </motion.button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={voiceInputRef}
-                    type="file"
-                    accept="audio/*"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) {
-                        handleVoiceUpload(file);
-                      }
-                    }}
-                  />
-                  <motion.button
-                    className="rounded-2xl border border-neon-purple/40 bg-neon-purple/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-neon-purple"
-                    whileTap={{ scale: 0.97 }}
-                    whileHover={{ scale: 1.03 }}
-                    onClick={() => voiceInputRef.current?.click()}
-                  >
-                    {voiceStatus === "uploading" ? "Загружаю..." : "Загрузить голос"}
-                  </motion.button>
-                  {voiceStatus === "error" && (
-                    <span className="text-xs uppercase tracking-[0.2em] text-neon-amber">{voiceError}</span>
-                  )}
-                </div>
-                {taskError && <p className="text-xs uppercase tracking-[0.2em] text-neon-amber">{taskError}</p>}
-              </div>
-            </div>
-          </section>
-        </div>
-      </div>
-      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-full max-w-xs flex-col gap-2 px-4 sm:right-6 sm:px-0">
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className={`rounded-2xl border px-4 py-3 text-xs uppercase tracking-[0.2em] backdrop-blur ${
-              toast.tone === "success"
-                ? "border-neon-green/40 bg-neon-green/10 text-neon-green"
-                : toast.tone === "error"
-                ? "border-neon-amber/40 bg-neon-amber/10 text-neon-amber"
-                : "border-neon-blue/40 bg-neon-blue/10 text-neon-blue"
-            }`}
+      <section className="space-y-3">
+        <h2 className="text-lg font-bold text-zinc-100">Генератор Хуков</h2>
+        <div className="flex gap-2">
+          <input 
+            value={model} 
+            onChange={e => setModel(e.target.value)} 
+            className="bg-zinc-800 border-zinc-700 rounded px-3 py-2 text-sm text-white w-24"
+            placeholder="Модель"
+          />
+          <button 
+            disabled={loading}
+            onClick={handleHooks}
+            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-medium flex-1 disabled:opacity-50"
           >
-            {toast.text}
+            Создать хуки
+          </button>
+        </div>
+        {hooks && (
+          <pre className="bg-zinc-900/50 p-3 rounded text-xs text-zinc-300 overflow-x-auto border border-zinc-800">
+            {hooks.replace(/```/g, "")}
+          </pre>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-lg font-bold text-zinc-100">Планировщик</h2>
+        <textarea 
+          value={brief}
+          onChange={e => setBrief(e.target.value)}
+          className="w-full bg-zinc-800 border-zinc-700 rounded px-3 py-2 text-sm text-white h-24 focus:ring-1 focus:ring-blue-500 outline-none"
+          placeholder="Какая цель?"
+        />
+        <button 
+          disabled={loading || !brief}
+          onClick={handlePlan}
+          className="w-full bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded text-sm font-medium disabled:opacity-50"
+        >
+          Создать план
+        </button>
+        {plan && (
+          <pre className="bg-zinc-900/50 p-3 rounded text-xs text-zinc-300 overflow-x-auto border border-zinc-800 whitespace-pre-wrap">
+            {plan.replace(/```/g, "")}
+          </pre>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// --- Main App ---
+
+export default function App() {
+  const [tab, setTab] = useState<"focus" | "lab">("focus");
+
+  return (
+    <div className="min-h-screen bg-black text-zinc-200 font-sans selection:bg-blue-500/30">
+      <div className="max-w-md mx-auto min-h-screen flex flex-col bg-zinc-950 shadow-2xl relative">
+        
+        {/* Header */}
+        <header className="px-5 py-4 flex items-center justify-between bg-zinc-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-zinc-800/50">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <h1 className="font-bold tracking-tight text-zinc-100">Life OS</h1>
           </div>
-        ))}
+          <div className="text-xs font-mono text-zinc-500">v2.0</div>
+        </header>
+
+        {/* Content */}
+        <main className="flex-1 px-5 py-6">
+          <AnimatePresence mode="wait">
+            {tab === "focus" ? (
+              <motion.div 
+                key="focus"
+                initial={{ opacity: 0, x: -20 }} 
+                animate={{ opacity: 1, x: 0 }} 
+                exit={{ opacity: 0, x: 20 }}
+                transition={{ duration: 0.2 }}
+              >
+                <FocusScreen />
+              </motion.div>
+            ) : (
+              <motion.div 
+                key="lab"
+                initial={{ opacity: 0, x: 20 }} 
+                animate={{ opacity: 1, x: 0 }} 
+                exit={{ opacity: 0, x: -20 }}
+                transition={{ duration: 0.2 }}
+              >
+                <LabScreen />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </main>
+
+        {/* Tab Bar */}
+        <nav className="sticky bottom-0 bg-zinc-950/90 backdrop-blur-lg border-t border-zinc-800 flex px-2 pb-safe">
+          <TabButton active={tab === "focus"} label="Фокус" onClick={() => setTab("focus")} />
+          <TabButton active={tab === "lab"} label="Лаба" onClick={() => setTab("lab")} />
+        </nav>
       </div>
-    </motion.main>
+    </div>
   );
 }

@@ -35,9 +35,21 @@ async def init_db() -> None:
 async def seed_defaults() -> None:
     from sqlalchemy import select
 
-    from app.models import AccountPlatform, ModelStatus
+    from app.models import AccountPlatform, ModelStatus, Niche
 
     async with SessionLocal() as session:
+        # Seed Niches
+        niches_result = await session.execute(select(Niche))
+        if not niches_result.scalars().first():
+            session.add_all(
+                [
+                    Niche(name="Спорт", icon="dumbbell", color="#EF4444", description="Тренировки и здоровье"),
+                    Niche(name="Работа", icon="briefcase", color="#3B82F6", description="Проекты и бизнес"),
+                    Niche(name="Отдых", icon="coffee", color="#10B981", description="Релакс и хобби"),
+                ]
+            )
+
+        # Legacy Seeds
         models_result = await session.execute(select(ModelStatus))
         if not models_result.scalars().first():
             session.add_all(

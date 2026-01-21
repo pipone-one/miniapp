@@ -13,6 +13,8 @@ from app.routers.models import router as models_router
 from app.routers.planning import router as planning_router
 from app.routers.scheduler import router as scheduler_router
 from app.routers.tasks import router as tasks_router
+from app.routers.niches import router as niches_router
+from app.routers.banana import router as banana_router
 from app.scheduler_worker import scheduler_worker
 
 
@@ -31,12 +33,14 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(niches_router)  # New
+app.include_router(tasks_router)
 app.include_router(accounts_router)
 app.include_router(marketing_router)
 app.include_router(models_router)
 app.include_router(planning_router)
 app.include_router(scheduler_router)
-app.include_router(tasks_router)
+app.include_router(banana_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -62,4 +66,9 @@ async def spa_fallback(full_path: str):
 async def startup() -> None:
     await init_db()
     await seed_defaults()
-    scheduler_worker.start()
+    # scheduler_worker.start() # Disabled for now as we rebuild logic
+    
+    # Start Telegram Bot in background
+    import asyncio
+    from app.bot_runner import start_bot
+    asyncio.create_task(start_bot())

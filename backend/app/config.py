@@ -8,10 +8,11 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     xai_api_key: str | None = None
+    google_api_key: str | None = None
     telegram_bot_token: str | None = None
     admin_chat_id: str | None = None
     openai_model: str = "gpt-4o"
-    grok_model: str = "xai/grok-4-1-fast-reasoning"
+    grok_model: str = "grok-beta"
     whisper_model: str = "whisper-1"
     mini_app_link: str | None = None
     timezone: str = "Europe/Kyiv"
