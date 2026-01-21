@@ -12,7 +12,7 @@ def get_genai_model():
     if not settings.google_api_key:
         return None
     genai.configure(api_key=settings.google_api_key)
-    return genai.GenerativeModel('gemini-1.5-flash')
+    return genai.GenerativeModel('gemini-2.0-flash')
 
 
 @router.post("/magic")
