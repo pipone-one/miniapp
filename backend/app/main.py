@@ -15,10 +15,26 @@ from app.routers.scheduler import router as scheduler_router
 from app.routers.tasks import router as tasks_router
 from app.routers.niches import router as niches_router
 from app.routers.banana import router as banana_router
+from app.routers.system import router as system_router
+from app.routers.assistant import router as assistant_router
 from app.scheduler_worker import scheduler_worker
 
 
-app = FastAPI(title=settings.app_name)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    await seed_defaults()
+    # scheduler_worker.start() # Disabled for now as we rebuild logic
+    
+    # Start Telegram Bot in background (Updated)
+    import asyncio
+    from app.bot_runner import start_bot
+    asyncio.create_task(start_bot())
+    yield
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
@@ -33,6 +49,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(system_router)
 app.include_router(niches_router)  # New
 app.include_router(tasks_router)
 app.include_router(accounts_router)
@@ -41,6 +58,7 @@ app.include_router(models_router)
 app.include_router(planning_router)
 app.include_router(scheduler_router)
 app.include_router(banana_router)
+app.include_router(assistant_router)
 
 
 @app.get("/", include_in_schema=False)
@@ -60,15 +78,3 @@ async def spa_fallback(full_path: str):
         return FileResponse(requested)
 
     return FileResponse(INDEX_FILE)
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    await init_db()
-    await seed_defaults()
-    # scheduler_worker.start() # Disabled for now as we rebuild logic
-    
-    # Start Telegram Bot in background
-    import asyncio
-    from app.bot_runner import start_bot
-    asyncio.create_task(start_bot())

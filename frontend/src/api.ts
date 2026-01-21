@@ -12,6 +12,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     ...options,
     headers: {
       "Content-Type": "application/json",
+      "ngrok-skip-browser-warning": "true",
       ...(options.headers || {})
     },
     body: options.body ? JSON.stringify(options.body) : undefined
@@ -93,12 +94,60 @@ export type HealthResponse = {
 
 // --- New Life OS Endpoints ---
 
+export type UserProfile = {
+  level: number;
+  xp: number;
+  streak: number;
+  last_activity_date?: string;
+  inventory?: string;
+  achievements?: string;
+  telegram_chat_id?: string;
+};
+
+export type TaskLogResponse = {
+  status: string;
+  profile?: UserProfile;
+};
+
+export type StatsResponse = {
+  completed_today: number;
+  total_active_today: number;
+  completion_rate_today: number;
+  completed_last_7_days: number;
+  streak: number;
+};
+
+export type SummaryResponse = {
+  summary: string;
+  grade: string;
+};
+
+export async function getProfile(): Promise<UserProfile> {
+  return request("/tasks/profile");
+}
+
+export async function updateProfile(data: { xp?: number; inventory?: string; achievements?: string; telegram_chat_id?: string }): Promise<UserProfile> {
+  return request("/tasks/profile", { method: "PATCH", body: data });
+}
+
+export async function getStats(): Promise<StatsResponse> {
+  return request("/tasks/stats");
+}
+
+export async function getDailySummary(): Promise<SummaryResponse> {
+  return request("/assistant/daily-summary");
+}
+
 export async function listNiches(): Promise<NicheItem[]> {
   return request("/niches/");
 }
 
 export async function createNiche(data: { name: string; color?: string; icon?: string }): Promise<NicheItem> {
   return request("/niches/", { method: "POST", body: data });
+}
+
+export async function deleteNiche(id: number): Promise<{ status: string }> {
+  return request(`/niches/${id}`, { method: "DELETE" });
 }
 
 export async function listTasks(nicheId?: number): Promise<TaskItem[]> {
@@ -115,7 +164,27 @@ export async function createTask(data: { title: string; niche_id?: number; task_
   return request("/tasks/", { method: "POST", body: payload });
 }
 
-export async function logTask(taskId: number, status: string, note?: string): Promise<{ status: string }> {
+export async function updateTask(taskId: number, data: { title?: string; niche_id?: number; task_type?: string; is_recurring?: boolean }): Promise<TaskItem> {
+  const payload = {
+    ...data,
+    task_type: data.is_recurring !== undefined ? (data.is_recurring ? "recurring" : "one_time") : data.task_type
+  };
+  return request(`/tasks/${taskId}`, { method: "PATCH", body: payload });
+}
+
+export async function deleteTask(taskId: number): Promise<{ status: string }> {
+  return request(`/tasks/${taskId}`, { method: "DELETE" });
+}
+
+export async function parseTask(text: string): Promise<{ title: string; niche_suggested?: string; is_recurring: boolean; scheduled_time?: string; due_date?: string }> {
+  return request("/assistant/parse", { method: "POST", body: { text } });
+}
+
+export async function breakDownGoal(goal: string): Promise<{ subtasks: { title: string; niche: string | null }[] }> {
+  return request("/assistant/breakdown", { method: "POST", body: { goal } });
+}
+
+export async function logTask(taskId: number, status: string, note?: string): Promise<TaskLogResponse> {
   const query = new URLSearchParams({ status });
   if (note) query.append("note", note);
   return request(`/tasks/${taskId}/log?${query.toString()}`, { method: "POST" });
@@ -195,6 +264,10 @@ export async function bananaFaceswap(file: File): Promise<{ result: string }> {
   }
   
   return response.json();
+}
+
+export async function resetSystem(): Promise<{ status: string }> {
+  return request("/system/reset", { method: "POST" });
 }
 
 // ... Deprecated/Removed ...

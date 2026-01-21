@@ -25,6 +25,23 @@ class NicheRead(NicheBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UserProfileRead(BaseModel):
+    level: int
+    xp: int
+    streak: int
+    last_activity_date: Optional[str] = None
+    inventory: Optional[str] = "[]"
+    achievements: Optional[str] = "[]"
+    telegram_chat_id: Optional[str] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskLogResponse(BaseModel):
+    status: str
+    profile: Optional[UserProfileRead] = None
+
+
 # --- Tasks ---
 
 class TaskBase(BaseModel):
@@ -45,6 +62,8 @@ class TaskCreate(TaskBase):
 class TaskUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    niche_id: Optional[int] = None
+    task_type: Optional[str] = None
     is_archived: Optional[bool] = None
 
 
@@ -56,6 +75,15 @@ class TaskRead(TaskBase):
     is_done_today: bool = False  # Computed field
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class StatsResponse(BaseModel):
+    completed_today: int
+    total_active_today: int
+    completion_rate_today: float
+    completed_last_7_days: int
+    streak: int
+
 
 
 # --- Logs ---

@@ -34,6 +34,22 @@ class Niche(Base):
     tasks = relationship("Task", back_populates="niche", cascade="all, delete-orphan")
 
 
+class UserProfile(Base):
+    __tablename__ = "user_profile"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    level: Mapped[int] = mapped_column(Integer, default=1)
+    xp: Mapped[int] = mapped_column(Integer, default=0)
+    streak: Mapped[int] = mapped_column(Integer, default=0)
+    last_activity_date: Mapped[str] = mapped_column(String(10), nullable=True)  # YYYY-MM-DD
+    
+    # Inventory & Achievements (JSON stored as Text for SQLite simplicity)
+    inventory: Mapped[str] = mapped_column(Text, default="[]")  # List of item IDs
+    achievements: Mapped[str] = mapped_column(Text, default="[]")  # List of achievement IDs
+    telegram_chat_id: Mapped[str] = mapped_column(String(32), nullable=True)  # Telegram Chat ID
+
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
