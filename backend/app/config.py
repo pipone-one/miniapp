@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     timezone: str = "Europe/Kyiv"
     posting_timezone: str = "Europe/Kyiv"
 
-    sqlite_path: str = "./data/cartel.db"
+    sqlite_path: str = "./data/life_os.db"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
