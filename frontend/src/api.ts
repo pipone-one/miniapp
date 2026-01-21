@@ -1,4 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
+const RAW_BASE = import.meta.env.VITE_API_BASE_URL;
+const FALLBACK_BASE = import.meta.env.DEV ? "/api" : "";
+const RESOLVED_BASE = (RAW_BASE && RAW_BASE.length > 0 ? RAW_BASE : FALLBACK_BASE) || "";
+const API_BASE = RESOLVED_BASE.endsWith("/") && RESOLVED_BASE.length > 1
+  ? RESOLVED_BASE.slice(0, -1)
+  : RESOLVED_BASE;
 
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 

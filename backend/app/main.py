@@ -1,5 +1,8 @@
-from fastapi import FastAPI
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.db import init_db, seed_defaults
@@ -14,6 +17,10 @@ from app.scheduler_worker import scheduler_worker
 
 
 app = FastAPI(title=settings.app_name)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
+INDEX_FILE = FRONTEND_DIST / "index.html"
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,9 +39,23 @@ app.include_router(scheduler_router)
 app.include_router(tasks_router)
 
 
-@app.get("/")
-async def root() -> dict:
+@app.get("/", include_in_schema=False)
+async def root():
+    if INDEX_FILE.is_file():
+        return FileResponse(INDEX_FILE)
     return {"status": "online", "service": settings.app_name}
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    if not INDEX_FILE.is_file():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    requested = (FRONTEND_DIST / full_path).resolve()
+    if FRONTEND_DIST in requested.parents and requested.is_file():
+        return FileResponse(requested)
+
+    return FileResponse(INDEX_FILE)
 
 
 @app.on_event("startup")
